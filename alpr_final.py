@@ -1,54 +1,132 @@
 import cv2
 import easyocr
+import numpy as np
+import re
+import requests # NEU: Für die Verbindung zur Web-App
 from picamera2 import Picamera2
-from ultralytics import YOLO
+from gpiozero import OutputDevice, Servo
+from time import sleep
 
 # --- KONFIGURATION ---
-# Hier trägst du die erlaubten Kennzeichen ein (deine "Whitelisting-Datenbank")
-ERLAUBTE_KENNZEICHEN = ["MA-CH-2026", "B-MW-1234", "VS-CODE-5"]
+# Trage hier die IP-Adresse des Computers ein, auf dem deine Flask-App läuft!
+# Wenn die App auf dem SELBEN Raspberry Pi läuft, nutze "http://127.0.0.1:5000/api/check"
+API_URL = "http://192.168.8.119:5001/api/check"
 
-print("🤖 Initialisiere KI-Modelle (YOLOv8 + EasyOCR)...")
-model = YOLO("yolov8n.pt") 
-reader = easyocr.Reader(['de'], gpu=False) # 'de' steht für deutsche/europäische Kennzeichen
+# --- HARDWARE INITIALISIEREN ---
+tor_relais = OutputDevice(18, active_high=True, initial_value=False)
+schranken_servo = Servo(17) 
 
-print("📸 Nehme Bild auf...")
+print("🚧 [SERVO] Initialisiere Schranke (Startposition ZU)...")
+schranken_servo.min()
+sleep(1) 
+schranken_servo.detach() 
+
+def impuls_tor_oeffnen():
+    print("⚙️ [RELAIS] Sende Schaltimpuls an Garagenmotor (Klack!)...")
+    tor_relais.on()   
+    sleep(1.0)        
+    tor_relais.off()  
+    
+    print("🚧 [SERVO] Schranke wird geöffnet!")
+    schranken_servo.max() 
+    sleep(1)
+    schranken_servo.detach() 
+    
+    print("⏳ Tor/Schranke ist offen! Pausiere System für 10 Sekunden...")
+    sleep(10) 
+    
+    print("🚧 [SERVO] Schranke wird wieder geschlossen!")
+    schranken_servo.min() 
+    sleep(1) 
+    schranken_servo.detach() 
+    
+    print("👀 Wächter-Modus wieder aktiv: Warte auf nächstes Fahrzeug...")
+
+# --- SYSTEM-START ---
+print("🤖 Initialisiere Texterkennung (EasyOCR)...")
+reader = easyocr.Reader(['de'], gpu=False)
+
+print("📸 Kamera wird für Dauerbetrieb gestartet...")
 picam2 = Picamera2()
-picam2.configure(picam2.create_preview_configuration())
+config = picam2.create_preview_configuration()
+picam2.configure(config)
 picam2.start()
-frame = picam2.capture_array()
-frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-picam2.stop()
-picam2.close()
 
-print("🔍 Scanne nach Objekten...")
-results = model(frame_bgr, verbose=False)
+print("👀 Wächter-Modus aktiv: Warte auf Bewegung...")
 
-# Wir simulieren hier die Erkennung. YOLOv8 erkennt primär "car" (Auto) oder "license plate"
-for r in results:
-    for box in r.boxes:
-        # Klasse 2 bei COCO-Dataset ist ein Auto ('car')
-        if int(box.cls[0]) == 2: 
-            # Koordinaten des Autos im Bild abgreifen
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
+letztes_bild = None
+
+try:
+    while True:
+        frame = picam2.capture_array()
+        grau = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        grau = cv2.GaussianBlur(grau, (21, 21), 0)
+
+        if letztes_bild is None:
+            letztes_bild = grau
+            continue
+
+        delta = cv2.absdiff(letztes_bild, grau)
+        thresh = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]
+        thresh = cv2.dilate(thresh, None, iterations=2)
+        konturen, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        bewegung_erkannt = False
+        for kontur in konturen:
+            if cv2.contourArea(kontur) < 3000:
+                continue
+            bewegung_erkannt = True
+            break
+        
+        if bewegung_erkannt:
+            print("🚗 Bewegung erkannt! Analysiere Text...")
             
-            # Das Auto aus dem Bild ausschneiden, um den Suchbereich für den Text zu verkleinern
-            auto_crop = frame_bgr[y1:y2, x1:x2]
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            ocr_results = reader.readtext(frame_bgr)
             
-            print("🔤 Versuche Text/Kennzeichen im Autobereich zu lesen...")
-            ocr_results = reader.readtext(auto_crop)
-            
+            zugriff_gewaehrt = False
             for (bbox, text, prob) in ocr_results:
-                # Text bereinigen (Leerzeichen entfernen, alles in Großbuchstaben)
-                text_clean = text.replace(" ", "").upper()
-                print(f"👉 Text gefunden: '{text_clean}' (Sicherheit: {round(prob*100)}%)")
+                # Wir filtern Sonderzeichen heraus, bevor wir es an die API senden
+                text_clean = re.sub(r'[^A-Z0-9]', '', text.upper())
                 
-                # Datenbank-Abgleich
-                if text_clean in ERLAUBTE_KENNZEICHEN:
-                    print(f"🔓 [ZUGRIFF GEWÄHRT] Kennzeichen {text_clean} ist registriert!")
-                    print("⚙️ SENDE BEFEHL AN MOTOR: ÖFFNE TOR...")
-                    # Hier kommt später die Ansteuerung der GPIO-Pins für den Motor hin
-                    break
-                else:
-                    print(f"🔒 [ZUGRIFF VERWEIGERT] Unbekanntes Fahrzeug: {text_clean}")
+                if len(text_clean) < 4:
+                    continue # Zu kurz, ignorieren
+                
+                print(f"👉 KI liest: '{text_clean}' - Frage Server an...")
+                
+                try:
+                    # Sende POST-Request an deine Flask-API
+                    response = requests.post(API_URL, json={'platte': text_clean}, timeout=5)
+                    daten = response.json()
+                    
+                    if response.status_code == 200 and daten.get('status') == 'success':
+                        if daten.get('authorized') == True:
+                            print(f"🔓 [ZUGRIFF ERLAUBT] Willkommen {daten.get('halter')}! ({daten.get('notiz')})")
+                            impuls_tor_oeffnen()
+                            zugriff_gewaehrt = True
+                            break # Tor öffnet, Suche abbrechen
+                        else:
+                            # Fahrzeug gesperrt oder nicht bekannt
+                            print(f"🔒 [ZUGRIFF VERWEIGERT] Server sagt: {daten.get('message')}")
+                    else:
+                        print("⚠️ Server antwortet mit Fehler.")
+                        
+                except Exception as e:
+                    print(f"❌ Netzwerkfehler zur API: {e}")
+            
+            if not zugriff_gewaehrt:
+                sleep(3) 
+            
+            frame = picam2.capture_array()
+            grau = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            letztes_bild = cv2.GaussianBlur(grau, (21, 21), 0)
+            
+        else:
+            letztes_bild = grau
+            
+        sleep(0.2) 
 
-print("✅ Durchlauf beendet.")
+except KeyboardInterrupt:
+    print("\n🛑 Wächter-Modus manuell beendet.")
+    picam2.stop()
+    picam2.close()
