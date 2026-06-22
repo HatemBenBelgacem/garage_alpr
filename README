@@ -1,0 +1,59 @@
+readme_alpr = """# 🤖 IoT Smart Gate - Edge Node (Garage ALPR)
+
+Dieses Repository enthält die Edge-Computing-Software für das IoT Smart Gate. Das System läuft auf einem Raspberry Pi, nutzt Computer Vision zur Nummernschilderkennung (ALPR) und steuert physische Hardware (Schranken/Tore) auf Basis der API-Antwort des Backends.
+
+✨ Features
+Bewegungserkennung (Wächter-Modus): Analysiert den Kamera-Stream effizient über Background Subtraction (OpenCV), um CPU-Ressourcen zu sparen.
+
+KI-Texterkennung (OCR): Nutzt EasyOCR zur Extraktion von Text (Nummernschildern) aus Kamerabildern. (Zusätzliche YOLOv8-Modelltests sind im Repo enthalten).
+
+Hardware-Steuerung: Direkte Ansteuerung eines Relais (Garagentor) und eines Servomotors (Schranke) via GPIO.
+
+API-Kommunikation: Synchronisiert erkannte Nummernschilder in Echtzeit mit dem zentralen Dashboard.
+
+🧰 Hardware-Anforderungen
+Raspberry Pi (empfohlen: Pi 5 für optimale KI-Performance)
+
+Raspberry Pi Camera Module (kompatibel mit libcamera/picamera2)
+
+Servo-Motor (verbunden mit GPIO 17)
+
+5V Relais-Modul (verbunden mit GPIO 18)
+
+🚀 Installation & Start
+System-Abhängigkeiten:
+Stelle sicher, dass libcamera und die Raspberry Pi Kamera-Treiber korrekt konfiguriert sind.
+
+Python-Bibliotheken installieren:
+
+Bash
+pip install opencv-python easyocr gpiozero requests ultralytics picamera2
+Konfiguration:
+Öffne die Datei alpr_final.py und passe die API_URL an die IP-Adresse deines Flask-Backends an:
+
+Python
+API_URL = "http://<DEINE_SERVER_IP>:5001/api/check"
+Tests ausführen (Optional aber empfohlen):
+
+python camera_test.py: Prüft den Kamerazugriff.
+
+python servo_test.py: Prüft die Beweglichkeit der Schranke.
+
+python alpr_process.py: Testet das YOLOv8 Objekterkennungs-Modell.
+
+Wächter-Modus starten:
+
+Bash
+python alpr_final.py
+⚠️ Wichtige Hinweise
+Da EasyOCR und OpenCV ressourcenintensiv sein können, wird empfohlen, den Raspberry Pi ausreichend zu kühlen (aktiver Kühler beim Pi 5).
+"""
+
+with open('README_garageapi.md', 'w', encoding='utf-8') as f:
+f.write(readme_api)
+
+with open('README_garage_alpr.md', 'w', encoding='utf-8') as f:
+f.write(readme_alpr)
+
+print("[file-tag: README_garageapi.md]")
+print("[file-tag: README_garage_alpr.md]")
